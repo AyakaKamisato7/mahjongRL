@@ -36,9 +36,6 @@ def find_latest_checkpoint(path_dir):
 
 
 def save_game_replay(env, episode_id, winner_id, reward, final_hand_type):
-    """
-    [功能] 保存回放，输出每一轮所有 Agent 的手牌 (Retrain版)
-    """
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"replay_retrain_ep{episode_id}_{timestamp}_win{winner_id}.txt"
     filepath = os.path.join(REPLAY_DIR, filename)
@@ -48,14 +45,16 @@ def save_game_replay(env, episode_id, winner_id, reward, final_hand_type):
         f.write(f"Time: {timestamp} | Winner: Agent {winner_id} | Reward: {reward:.2f} | Type: {final_hand_type}\n")
         f.write(
             f"Laizi: {TileUtils.to_string(env.indicator_tile)} -> {[TileUtils.to_string(l) for l in env.laizi_set]}\n")
-        f.write("=" * 60 + "\n\n")
+        f.write("=" * 80 + "\n\n")
 
         for step_i, record in enumerate(env.action_history):
             pid = record['pid']
             act = record['action']
             snapshot = record['snapshot']
 
-            if act <= 33:
+            if act == Cfg.ACT_DRAW:
+                act_str = "DRAWS a tile"
+            elif act <= 33:
                 act_str = f"Discard {TileUtils.to_string(act)}"
             else:
                 act_map = {34: "PASS", 35: "HU", 36: "PON", 37: "GANG", 38: "CHI_L", 39: "CHI_M", 40: "CHI_R"}
@@ -73,7 +72,7 @@ def save_game_replay(env, episode_id, winner_id, reward, final_hand_type):
                 melds_str = [(m[0], TileUtils.to_string(m[1])) for m in p_state['melds']]
 
                 prefix = "👉 " if p_i == pid else "   "
-                f.write(f"{prefix}A{p_i}: {hand_str} | {melds_str}\n")
+                f.write(f"{prefix}A{p_i}: {hand_str} | Melds: {melds_str}\n")
             f.write("\n")
 
         f.write("=== End of Replay ===\n")
@@ -128,18 +127,24 @@ def retrain():
             i_episode += 1
             reward_history.append(ep_reward)
 
-            if 'winner' in info:
+            # [修复] 检查 winner 是否为 None
+            if info.get('winner') is not None:
                 winner_id = info['winner']
                 win_counts[winner_id] += 1
                 w_type = "Unknown"
                 try:
-                    is_win, w_type = env.rules.is_winning(
+                    is_win, calculated_type = env.rules.is_winning(
                         env.players[winner_id]['hand'],
                         env.laizi_set,
                         extra_laizi_cnt=env.players[winner_id]['flower_laizis']
                     )
-                except:
-                    pass
+                    if is_win:
+                        w_type = calculated_type
+                    else:
+                        w_type = "FalseHu"
+                except Exception as e:
+                    w_type = f"Err: {str(e)[:10]}"
+
                 win_types[w_type] += 1
 
                 if i_episode % 50 == 0 or ep_reward > 5.0:
@@ -167,8 +172,9 @@ def retrain():
         if len(agent.buffer) == 0:
             if update_count > 0 and update_count % save_interval == 0:
                 save_name = f"mahjong_agent_step{total_timesteps}.pth"
-                agent.save_model(os.path.join(SAVE_DIR, save_name))
-                print(f"💾 Checkpoint saved: {save_name}")
+                save_path = os.path.join(SAVE_DIR, save_name)
+                agent.save_model(save_path)
+                print(f"💾 Checkpoint saved: {save_path}")
 
             if avg_reward > best_avg_reward:
                 best_avg_reward = avg_reward
