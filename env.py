@@ -551,30 +551,27 @@ class MahjongEnv:
                 t = self.incoming_tile
                 player['hand'][t + 1] -= 1;
                 player['hand'][t + 2] -= 1
-                player['melds'].append(('CHI', t))
+                # [修改] 标记为 CHI_L，方便GUI画图
+                player['melds'].append(('CHI_L', t))
                 self.phase = 'DISCARD'
                 self.response_queue = []
+
             elif action == self.cfg.ACT_CHI_MID:
                 t = self.incoming_tile
                 player['hand'][t - 1] -= 1;
                 player['hand'][t + 1] -= 1
-                player['melds'].append(('CHI', t))
+                # [修改] 标记为 CHI_M
+                player['melds'].append(('CHI_M', t))
                 self.phase = 'DISCARD'
                 self.response_queue = []
+
             elif action == self.cfg.ACT_CHI_RIGHT:
                 t = self.incoming_tile
                 player['hand'][t - 2] -= 1;
                 player['hand'][t - 1] -= 1
-                player['melds'].append(('CHI', t))
+                # [修改] 标记为 CHI_R
+                player['melds'].append(('CHI_R', t))
                 self.phase = 'DISCARD'
                 self.response_queue = []
-
-            elif action == self.cfg.ACT_GANG:  # 明杠
-                if not self._perform_gang(pid, incoming_tile=self.incoming_tile):
-                    done = True
-                    info['winner'] = None
-                else:
-                    self.phase = 'DISCARD'
-                    self.response_queue = []
 
         return self.get_observation(self.current_player), reward, done, info

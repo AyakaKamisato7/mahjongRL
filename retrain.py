@@ -103,10 +103,15 @@ def retrain():
     win_types = Counter()
     best_avg_reward = -float('inf')
 
-    target_timesteps = Cfg.MAX_TIMESTEPS
-    if start_timestep >= target_timesteps:
-        print(f"⚠️  Current step {start_timestep} >= Max {target_timesteps}. Extending limit by +1M.")
-        target_timesteps = start_timestep + 1_000_000
+    # ==========================================
+    # [核心修改] 强制增量训练逻辑
+    # ==========================================
+    EXTRA_STEPS = 1000000  # 你想要额外训练的步数 (这里设为10万)
+    target_timesteps = start_timestep + EXTRA_STEPS
+
+    print(f"🎯 Target Timesteps set to: {target_timesteps}")
+    print(f"   (Base: {start_timestep} + Extra: {EXTRA_STEPS})")
+    # ==========================================
 
     while total_timesteps < target_timesteps:
         batch_start_time = time.time()
@@ -127,7 +132,6 @@ def retrain():
             i_episode += 1
             reward_history.append(ep_reward)
 
-            # [修复] 检查 winner 是否为 None
             if info.get('winner') is not None:
                 winner_id = info['winner']
                 win_counts[winner_id] += 1
