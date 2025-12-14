@@ -1,5 +1,6 @@
 import os
 
+# 屏蔽 Pygame 欢迎信息
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import warnings
 
@@ -9,13 +10,13 @@ import pygame
 import sys
 import time
 import random
+import numpy as np  # 引入 numpy 进行手牌数组对比
 from env import MahjongEnv, TileUtils
 from agent import PPOAgent
 from config import MahjongConfig as Cfg
 
 # --- 路径配置 ---
 WORK_DIR = r"D:/pyworksp/mahjongRL/"
-# 强制使用 best_model.pth
 MODEL_PATH = os.path.join(WORK_DIR, "pth", "best_model.pth")
 IMG_DIR = os.path.join(WORK_DIR, "img")
 
@@ -30,8 +31,7 @@ TILE_BACK_COLOR = (30, 100, 60)
 TILE_WIDTH = 46
 TILE_HEIGHT = 66
 FONT_SIZE = 26
-# 牌河放大 15% (0.75 * 1.15 ≈ 0.86)
-RIVER_SCALE = 0.86
+RIVER_SCALE = 0.90  # 牌河放大
 
 
 def get_chinese_font_path():
@@ -53,7 +53,7 @@ class InteractiveMahjong:
         self.W = int(info.current_w)
         self.H = int(info.current_h - 60)
         self.screen = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
-        pygame.display.set_caption("奉化麻将: 人机大战 (Final Fixed)")
+        pygame.display.set_caption("奉化麻将: 人机大战 (Red Highlight Fixed)")
 
         # 字体
         self.font_path = get_chinese_font_path()
@@ -61,12 +61,10 @@ class InteractiveMahjong:
             self.font = pygame.font.Font(self.font_path, FONT_SIZE)
             self.font_small = pygame.font.Font(self.font_path, int(FONT_SIZE * 0.7))
             self.font_btn = pygame.font.Font(self.font_path, 30)
-            self.font_large = pygame.font.Font(self.font_path, 40)
         else:
             self.font = pygame.font.SysFont("microsoftyahei", FONT_SIZE)
             self.font_small = pygame.font.SysFont("microsoftyahei", int(FONT_SIZE * 0.7))
             self.font_btn = pygame.font.SysFont(None, 30)
-            self.font_large = pygame.font.SysFont(None, 40)
 
         self.clock = pygame.time.Clock()
 
@@ -74,11 +72,8 @@ class InteractiveMahjong:
         self.tile_imgs = {}
         self._load_tile_images()
 
-        # 核心逻辑
-        self.env = MahjongEnv()
+        # 初始化 Agent
         self.agent = PPOAgent()
-
-        # 加载模型
         target_model = agent_path if agent_path else MODEL_PATH
         if os.path.exists(target_model):
             try:
@@ -90,19 +85,16 @@ class InteractiveMahjong:
             print(f"⚠️ 未找到模型 {target_model}，使用随机策略")
 
         self.human_pid = 0
+        self.last_drawn_tile = None  # [新增] 专门记录人类玩家刚摸到的牌 ID
+
+        # 启动游戏
+        self.env = None
         self.reset_game()
 
     def _load_tile_images(self):
-        """
-        加载图片：直接加载 0.png ~ 41.png
-        对应 Env ID: 0-8万, 9-17筒, 18-26索, 27-33字, 34-41花
-        """
         print(f"正在加载图片资源: {IMG_DIR}")
         if not os.path.exists(IMG_DIR):
-            print("⚠️ 图片目录不存在，使用文字模式")
             return
-
-        # 直接遍历 ID 加载
         for i in range(42):
             fname = f"{i}.png"
             fpath = os.path.join(IMG_DIR, fname)
@@ -112,52 +104,77 @@ class InteractiveMahjong:
                     self.tile_imgs[i] = img
                 except:
                     pass
-            else:
-                # print(f"缺失图片: {fname}")
-                pass
 
     def reset_game(self):
-        """重置游戏 + 随机庄家"""
+        """完全重置游戏逻辑"""
+        print("🔄 正在重置游戏...")
+        pygame.event.clear()  # 清除积压按键
+
+        # 1. 重建环境
+        self.env = MahjongEnv()
         self.obs = self.env.reset()
+        self.last_drawn_tile = None
 
-        # --- 随机庄家逻辑 ---
-        # Env 默认 dealer=0。我们如果不喜欢，就手动把 0 号多抓的那张牌
-        # 转移给随机选出的新 dealer。
-
+        # 2. 随机庄家 Hack
         last_draw_pid = -1
-        # 检查是否刚开局（刚摸完牌）
         if self.env.action_history:
             last_rec = self.env.action_history[-1]
             if last_rec['action'] == Cfg.ACT_DRAW:
                 last_draw_pid = last_rec['pid']
 
-        if last_draw_pid != -1:
-            new_dealer = random.randint(0, 3)
-            if new_dealer != 0:
-                # 0号目前14张，new_dealer 13张。转移一张。
-                h0 = self.env.players[0]['hand']
-                valid_tiles = [t for t in range(34) if h0[t] > 0]
-                if valid_tiles:
-                    move_tile = random.choice(valid_tiles)
-                    # 移动数据
-                    self.env.players[0]['hand'][move_tile] -= 1
-                    self.env.players[new_dealer]['hand'][move_tile] += 1
+        # 默认 Dealer 是 0
+        new_dealer = random.randint(0, 3)
 
-                    # 更新 Env 状态指针
-                    self.env.dealer = new_dealer
-                    self.env.current_player = new_dealer
-                    self.env.incoming_tile = move_tile
+        # 如果新庄家不是 0 号 (环境默认发牌给了0号14张)
+        if last_draw_pid != -1 and new_dealer != 0:
+            h0 = self.env.players[0]['hand']
+            valid_tiles = [t for t in range(34) if h0[t] > 0]
+            if valid_tiles:
+                # 从 0 号手里拿走一张
+                move_tile = random.choice(valid_tiles)
+                self.env.players[0]['hand'][move_tile] -= 1
+                # 给新庄家一张
+                self.env.players[new_dealer]['hand'][move_tile] += 1
 
-        # [核心修复] 必须获取“当前行动者”的观测，而不是死板地获取人类的
-        # 如果当前是 AI 庄家，self.obs 必须是 AI 的视角，否则 AI 会因看不到牌而乱打导致流局。
+                # 更新 Env 指针
+                self.env.dealer = new_dealer
+                self.env.current_player = new_dealer
+                self.env.incoming_tile = move_tile
+
+                # 追加记录
+                self.env.action_history.append({
+                    'pid': new_dealer,
+                    'action': Cfg.ACT_DRAW,
+                    'snapshot': None
+                })
+
+                # [修复] 如果新庄家是人类(这里逻辑上不会进这个分支，因为new_dealer != 0，人类是0)
+                # 但如果未来人类PID可变，这里需要记录
+                if new_dealer == self.human_pid:
+                    self.last_drawn_tile = move_tile
+
+        # [修复] 如果新庄家恰好就是 0 号 (Env默认发牌状态)
+        # 我们需要从手里随便挑一张作为“刚摸到的牌”以便高亮，否则开局没有高亮牌
+        if self.env.dealer == self.human_pid:
+            # 寻找手牌中ID最大的一张作为视觉上的“摸牌” (或者随机一张)
+            h_human = self.env.players[self.human_pid]['hand']
+            valid_tiles = [t for t in range(34) if h_human[t] > 0]
+            if valid_tiles:
+                # 优先使用 move_tile 如果刚才发生了交换 (虽然在这个分支应该没交换)
+                # 否则取最后一张
+                self.last_drawn_tile = valid_tiles[-1]
+
+        # 3. 刷新观测
         self.obs = self.env.get_observation(self.env.current_player)
 
+        # 4. 清空UI状态
         self.done = False
         self.steps = 0
         self.info_text = f"游戏开始! 庄家: A{self.env.dealer}"
         self.active_buttons = []
         self.human_hand_rects = []
-        print(f"🔄 重置完成. 庄:A{self.env.dealer}, 骰:{self.env.dice}")
+
+        print(f"✅ 重置完成. 庄:A{self.env.dealer}, 初始高亮: {TileUtils.to_string(self.last_drawn_tile)}")
 
     def _draw_tile_img(self, tile_id, x, y, w, h):
         if tile_id in self.tile_imgs:
@@ -169,13 +186,10 @@ class InteractiveMahjong:
     def _draw_tile(self, tile_id, x, y, scale=1.0, is_laizi=False, special_text=None, is_hidden=False, highlight=False):
         w = int(TILE_WIDTH * scale)
         h = int(TILE_HEIGHT * scale)
-        rect = pygame.Rect(x, y, w, h)
 
-        # 高亮偏移 (向上浮动)
-        offset_y = -12 if highlight else 0
+        offset_y = -20 if highlight else 0
         draw_rect = pygame.Rect(x, y + offset_y, w, h)
 
-        # 1. 绘制背面
         if is_hidden:
             pygame.draw.rect(self.screen, (220, 220, 220), draw_rect, border_radius=4)
             inner = pygame.Rect(x + 2, y + 2 + offset_y, w - 4, h - 4)
@@ -183,15 +197,12 @@ class InteractiveMahjong:
             pygame.draw.rect(self.screen, (50, 150, 80), inner, 1)
             return
 
-        # 2. 绘制正面底色
         pygame.draw.rect(self.screen, (250, 248, 235), draw_rect, border_radius=4)
 
-        # 3. 绘制内容 (优先图片)
         drawn = False
         if special_text is None and tile_id != -1:
             drawn = self._draw_tile_img(tile_id, x, y + offset_y, w, h)
 
-        # 4. 回退文字模式
         if not drawn:
             pygame.draw.rect(self.screen, (100, 100, 100), draw_rect, 1, border_radius=4)
             text = special_text if special_text else TileUtils.to_string(tile_id)
@@ -211,43 +222,63 @@ class InteractiveMahjong:
             s_r = s.get_rect(center=draw_rect.center)
             self.screen.blit(s, s_r)
 
-        # 5. 赖子金框
         if is_laizi:
             pygame.draw.rect(self.screen, (255, 215, 0), draw_rect, 3, border_radius=4)
 
-        # 6. [修改] 高亮红框 (摸牌)
         if highlight:
-            pygame.draw.rect(self.screen, (255, 50, 50), draw_rect, 3, border_radius=4)
+            pygame.draw.rect(self.screen, (255, 30, 30), draw_rect, 3, border_radius=4)
 
     def _draw_player_hand(self, pid, cx, cy):
         player = self.env.players[pid]
         hand_counts = player['hand'].copy()
 
         is_human = (pid == self.human_pid)
-        # [修改] 如果游戏结束(done=True)，所有人都展示手牌(不隐藏)
         should_hide = (not is_human) and (not self.done)
 
-        # 分离摸牌逻辑 (高亮那张牌)
-        incoming_tile = self.env.incoming_tile
+        # --- [逻辑修正] 摸牌分离判定 ---
         separate_tile = None
 
-        # 只有当前玩家 && 出牌阶段 && 确实有这张牌 -> 分离显示
+        # 1. 只有当前玩家 && 出牌阶段
         if self.env.current_player == pid and self.env.phase == 'DISCARD':
-            if incoming_tile is not None and incoming_tile < 34:
-                if hand_counts[incoming_tile] > 0:
-                    separate_tile = incoming_tile
-                    hand_counts[incoming_tile] -= 1
+            # 2. 检查历史记录：上一条动作必须是 ACT_DRAW (摸牌)
+            is_fresh_draw = False
+            if self.env.action_history:
+                last_rec = self.env.action_history[-1]
+                if last_rec['pid'] == pid and last_rec['action'] == Cfg.ACT_DRAW:
+                    is_fresh_draw = True
 
+            if is_fresh_draw:
+                # [核心修改]
+                # 对于人类：使用精确计算的 last_drawn_tile
+                # 对于AI：这里由于没有计算 last_drawn，我们暂时不做分离或者取最后一个有效的
+                target_tile = -1
+
+                if is_human and self.last_drawn_tile is not None:
+                    target_tile = self.last_drawn_tile
+                elif not is_human:
+                    # AI 简单处理：找一个手里有的牌 (仅作视觉占位)
+                    valid_idx = np.where(hand_counts > 0)[0]
+                    if len(valid_idx) > 0: target_tile = valid_idx[-1]
+
+                # 3. 确保这张牌在手里 (防止数据不同步)
+                if target_tile != -1 and 0 <= target_tile < 34:
+                    if hand_counts[target_tile] > 0:
+                        separate_tile = target_tile
+                        # [关键步骤] 从排序堆里扣除这张牌
+                        hand_counts[target_tile] -= 1
+
+        # --- 生成排序好的左侧牌堆 ---
         hand_tiles = []
         for t_id, count in enumerate(hand_counts):
             hand_tiles.extend([t_id] * count)
         hand_tiles.extend([-1] * player['flower_laizis'])
 
+        # --- 布局参数 ---
         base_width = len(hand_tiles) * (TILE_WIDTH + 2)
-        total_width = base_width + (TILE_WIDTH + 20) if separate_tile is not None else base_width
+        # 如果有分离牌，宽度增加一个牌位+间距
+        total_width = base_width + (TILE_WIDTH + 25) if separate_tile is not None else base_width
 
-        # 布局计算
-        if pid == 0:  # Human
+        if pid == 0:
             start_x = cx - total_width // 2
             start_y = self.H - 140
             meld_x = start_x + total_width + 20
@@ -255,21 +286,21 @@ class InteractiveMahjong:
             flower_x = start_x - 120
             flower_y = start_y
             self.human_hand_rects = []
-        elif pid == 1:  # Right
+        elif pid == 1:
             start_x = self.W - total_width - 50
             start_y = cy - 60
             meld_x = self.W - 680
             meld_y = start_y + TILE_HEIGHT + 15
             flower_x = start_x
             flower_y = start_y - 60
-        elif pid == 2:  # Top
+        elif pid == 2:
             start_x = cx - total_width // 2
             start_y = 60
             meld_x = start_x - 20 - (len(player['melds']) * TILE_WIDTH * 2.8)
             meld_y = start_y + 10
             flower_x = start_x + total_width + 50
             flower_y = start_y
-        elif pid == 3:  # Left
+        elif pid == 3:
             start_x = 50
             start_y = cy - 60
             meld_x = start_x
@@ -277,15 +308,14 @@ class InteractiveMahjong:
             flower_x = start_x
             flower_y = start_y - 60
 
-        # 庄家标记
+        # 庄家
         if self.env.dealer == pid:
             z_s = self.font_small.render("庄", True, (255, 0, 0))
-            # 简单的位置调整
             z_x = start_x - 30 if pid in [0, 2, 3] else start_x + total_width + 10
             pygame.draw.circle(self.screen, (255, 255, 255), (z_x + 10, start_y + 10), 12)
             self.screen.blit(z_s, (z_x + 2, start_y))
 
-        # 绘制立牌
+        # --- 绘制左侧排序牌堆 ---
         for i, tid in enumerate(hand_tiles):
             dx = i * (TILE_WIDTH + 2)
             is_lz = (tid in self.env.laizi_set)
@@ -293,21 +323,20 @@ class InteractiveMahjong:
 
             self._draw_tile(tid, start_x + dx, start_y, is_laizi=is_lz, special_text=txt, is_hidden=should_hide)
 
-            # 人类可点击区域 (不含高亮牌)
             if is_human:
                 rect = pygame.Rect(start_x + dx, start_y, TILE_WIDTH, TILE_HEIGHT)
                 self.human_hand_rects.append((rect, tid))
 
-        # 绘制摸牌 (分离 & 高亮)
+        # --- 绘制右侧高亮牌 (刚摸的) ---
         if separate_tile is not None:
-            sep_x = start_x + base_width + 20
+            sep_x = start_x + base_width + 25  # 距离左侧牌堆 25px
             is_lz = (separate_tile in self.env.laizi_set)
             # 传递 highlight=True
             self._draw_tile(separate_tile, sep_x, start_y, is_laizi=is_lz, is_hidden=should_hide, highlight=True)
 
             if is_human:
-                # 点击区域需要上浮，因为牌画的时候上浮了
-                rect = pygame.Rect(sep_x, start_y - 12, TILE_WIDTH, TILE_HEIGHT)
+                # 点击区域也要上浮
+                rect = pygame.Rect(sep_x, start_y - 20, TILE_WIDTH, TILE_HEIGHT)
                 self.human_hand_rects.append((rect, separate_tile))
 
         # 补花
@@ -315,7 +344,6 @@ class InteractiveMahjong:
             r = i // 4;
             c = i % 4
             self._draw_tile(fid, flower_x + c * 35, flower_y + r * 45, scale=0.8)
-
         # 花赖
         off = len(player['flowers'])
         for i in range(player['flower_laizis']):
@@ -326,23 +354,36 @@ class InteractiveMahjong:
 
         self._draw_melds(player, meld_x, meld_y)
 
+        # 红点指示器
+        if self.env.current_player == pid:
+            ind_x = start_x - 20
+            ind_y = start_y + TILE_HEIGHT // 2
+            pygame.draw.circle(self.screen, (255, 0, 0), (ind_x, ind_y), 8)
+            pygame.draw.circle(self.screen, (255, 255, 255), (ind_x, ind_y), 10, 2)
+
     def _draw_melds(self, player, start_x, start_y):
         for i, (m_type, m_tile) in enumerate(player['melds']):
             offset_x = i * (TILE_WIDTH * 2.8)
             tiles = []
             label = ""
             if m_type == 'PON':
-                tiles = [m_tile] * 3; label = "碰"
+                tiles = [m_tile] * 3;
+                label = "碰"
             elif m_type == 'GANG':
-                tiles = [m_tile] * 4; label = "杠"
+                tiles = [m_tile] * 4;
+                label = "杠"
             elif m_type == 'CHI_L':
-                tiles = [m_tile, m_tile + 1, m_tile + 2]; label = "吃"
+                tiles = [m_tile, m_tile + 1, m_tile + 2];
+                label = "吃"
             elif m_type == 'CHI_M':
-                tiles = [m_tile - 1, m_tile, m_tile + 1]; label = "吃"
+                tiles = [m_tile - 1, m_tile, m_tile + 1];
+                label = "吃"
             elif m_type == 'CHI_R':
-                tiles = [m_tile - 2, m_tile - 1, m_tile]; label = "吃"
+                tiles = [m_tile - 2, m_tile - 1, m_tile];
+                label = "吃"
             else:
-                tiles = [m_tile] * 3; label = "吃"
+                tiles = [m_tile] * 3;
+                label = "吃"
 
             for k, tid in enumerate(tiles):
                 self._draw_tile(tid, start_x + offset_x + k * (TILE_WIDTH * 0.7), start_y, scale=0.7)
@@ -396,7 +437,7 @@ class InteractiveMahjong:
         texts = [
             f"剩余牌数: {len(self.env.wall)}",
             f"本局赖子: {lz_str}",
-            f"骰子: {self.env.dice}",  # [新增] 显示骰子
+            f"庄家: A{self.env.dealer} | 骰子: {self.env.dice}",
             f"我的状态: {self.env.phase}",
             f"上一动作: {last_str}",
             "ESC退出 | R重开"
@@ -411,7 +452,6 @@ class InteractiveMahjong:
 
     def _draw_interaction_panel(self):
         if self.env.current_player != self.human_pid: return
-        # [核心修复] 如果游戏结束，禁止画按钮，防止胡牌后还能点过/杠
         if self.done: return
 
         mask = self.obs['mask']
@@ -470,10 +510,35 @@ class InteractiveMahjong:
         return False
 
     def _execute_step(self, action):
+        # [核心修复] 在执行 Action 之前，备份当前人类手牌
+        # 用于后续计算哪张牌是新摸到的
+        prev_hand_count = self.env.players[self.human_pid]['hand'].copy()
+
+        # 执行动作
         self.obs, reward, self.done, info = self.env.step(action)
         self.steps += 1
+
+        # [核心修复] 重新计算 last_drawn_tile
+        # 1. 必须未结束
+        # 2. 必须轮到人类出牌 (Phase == DISCARD)
+        if not self.done and self.env.current_player == self.human_pid and self.env.phase == 'DISCARD':
+            # 计算手牌增量
+            curr_hand_count = self.env.players[self.human_pid]['hand']
+            diff = curr_hand_count - prev_hand_count
+
+            # 找到数量增加的牌 ID
+            added_indices = np.where(diff > 0)[0]
+            if len(added_indices) > 0:
+                self.last_drawn_tile = added_indices[0]
+            else:
+                # 如果没有增加牌 (例如刚吃、碰完轮到自己出牌)，则不应该高亮任何牌
+                self.last_drawn_tile = None
+        elif self.env.current_player != self.human_pid:
+            # 轮到别人时，清空我的高亮
+            self.last_drawn_tile = None
+
         if self.done:
-            self.active_buttons = []  # 清空按钮
+            self.active_buttons = []
             winner = info.get('winner')
             if winner is not None:
                 if winner == self.human_pid:
@@ -539,6 +604,9 @@ if __name__ == "__main__":
 
         traceback.print_exc()
         input("Error! Press Enter to exit...")
+
+
+
 
 # import os
 #
