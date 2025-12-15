@@ -17,7 +17,8 @@ from config import MahjongConfig as Cfg
 
 # --- 路径配置 ---
 WORK_DIR = r"D:/pyworksp/mahjongRL/"
-MODEL_PATH = os.path.join(WORK_DIR, "pth", "best_model.pth")
+# MODEL_PATH = os.path.join(WORK_DIR, "pth", "best_model.pth") mahjong_agent_step8875566
+MODEL_PATH = os.path.join(WORK_DIR, "pth", "mahjong_agent_step8875566.pth")
 IMG_DIR = os.path.join(WORK_DIR, "img")
 
 # --- 配色方案 ---
