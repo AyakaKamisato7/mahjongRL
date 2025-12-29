@@ -10,7 +10,7 @@ import pygame
 import sys
 import time
 import random
-import numpy as np  # 引入 numpy 进行手牌数组对比
+import numpy as np  # 引入 numpy 进行手牌数组对比 
 from env import MahjongEnv, TileUtils
 from agent import PPOAgent
 from config import MahjongConfig as Cfg
